@@ -1,66 +1,66 @@
-import { App, moment, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { createDailyNote, getAllDailyNotes, getDailyNote } from 'obsidian-daily-notes-interface';
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { loadPtnData, markItemSynced  } from 'ptn';
+import { FeedItem } from "ptn-helpers";
 
 interface PluginSettings {
-	roam_key: string;
-	auto_append: string;
-	use_raw_text: boolean;
+	ptn_key: string;
+	auto_prepend: string;
 }
 
 const DEFAULT_SETTINGS: PluginSettings = {
-	roam_key: '',
-	auto_append: '#phonetoroam',
-	use_raw_text: false
+	ptn_key: '',
+	auto_prepend: '#PhoneToNoteToObsidian',
 }
 
-export default class PhoneToRoamPlugin extends Plugin {
+export default class PhoneToNoteToObsidianPlugin extends Plugin {
 	settings: PluginSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		this.addSettingTab(new PhoneToRoamSettingTab(this.app, this));
+		this.addSettingTab(new PhoneToNoteToObsidianSettingTab(this.app, this));
 
-		this.registerInterval(window.setInterval(this.getPhoneToRoam.bind(this), 60 * 1000));
-		this.getPhoneToRoam();
+		this.registerInterval(window.setInterval(this.getPhoneToObsidian.bind(this), 60 * 1000));
+		this.getPhoneToObsidian();
 	}
 
-	async getPhoneToRoam() {
-		if (this.settings.roam_key.trim() === '') {
+	async getPhoneToObsidian() {
+		if (this.settings.ptn_key.trim() === '') {
+			new Notice(`The Phone to Obsidian plugin is not configured. Please configure it in the settings.`);
 			return;
 		}
 
-		const obsidianApp = this.app;
-		let url = 'https://www.phonetoroam.com/messages.json?roam_key=' + this.settings.roam_key;
-		const response = await fetch(url);
+		// Get new messages from the feed
+		const items: FeedItem[] = await loadPtnData(this.settings.ptn_key);
 
-		if (response.ok) {
-			const content = await response.json();
+		// Retrieve the inbox file
+		let file = this.app.vault.getAbstractFileByPath('Inbox.md');
 
-			// Sort by created_at since the API sorts by updated_at
-			content.sort((a: any, b: any) => new Date(a['created_at']).getTime() - new Date(b['created_at']).getTime());
-
-			for (const phoneNote of content) {
-				const dailyNotes = getAllDailyNotes();
-				const date = moment(phoneNote['created_at']);
-				let dailyNote = getDailyNote(date, dailyNotes);
-				if (!dailyNote) {
-					dailyNote = await createDailyNote(date);
-				}
-				const prevNoteText = await obsidianApp.vault.read(dailyNote)
-
-				const textProp = this.settings.use_raw_text ? 'body' : 'text';
-				const phoneNoteText = phoneNote[textProp] + (this.settings.auto_append ? ' ' + this.settings.auto_append : '');
-				let newNoteText = prevNoteText;
-				if (newNoteText != '') {
-					newNoteText += '\n';
-				}
-				newNoteText += phoneNoteText;
-
-				await obsidianApp.vault.modify(dailyNote, newNoteText);
-
-				new Notice('Added new Phone to Roam note to ' + dailyNote.path);
+		// If the inbox note doesn't exist, create it
+		if (!file) {
+			var note = await this.app.vault.create('Inbox.md', '');
+		} else {
+			// Check if file is a TFile
+			if (file instanceof TFile) {
+				var note = file;
+			} else {
+				new Notice(`Unable to find nor create the inbox file.`);
+				return;
 			}
+		}
+
+		for (const phoneNote of items) { 
+			this.app.vault.append(note, this.settings.auto_prepend + ' **' + phoneNote._ptr_sender_type + '@' + phoneNote.date_published + '**\n');
+
+			if (String.isString(phoneNote.content_text)) {
+				for (const line of phoneNote.content_text.split('\n')) {
+					this.app.vault.append(note, '> ' + line + '\n');
+				}
+			}
+
+			this.app.vault.append(note, '\n');
+			markItemSynced(phoneNote, this.settings.ptn_key);
+			new Notice('Added new Phone to Note to Obsidian note to ' + note.path);
 		}
 	}
 
@@ -76,10 +76,10 @@ export default class PhoneToRoamPlugin extends Plugin {
 	}
 }
 
-class PhoneToRoamSettingTab extends PluginSettingTab {
-	plugin: PhoneToRoamPlugin;
+class PhoneToNoteToObsidianSettingTab extends PluginSettingTab {
+	plugin: PhoneToNoteToObsidianPlugin;
 
-	constructor(app: App, plugin: PhoneToRoamPlugin) {
+	constructor(app: App, plugin: PhoneToNoteToObsidianPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -89,38 +89,30 @@ class PhoneToRoamSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl('h2', {text: 'Phone to Roam to Obsidian Settings'});
+		containerEl.createEl('h2', {text: 'Phone to Note to Obsidian Settings'});
 
 		new Setting(containerEl)
-			.setName('roam_key')
-			.setDesc('From www.phonetoroam.com')
+			.setName('ptn_key')
+			.setDesc('From www.phonetonote.com')
 			.addText(text => text
 				.setPlaceholder('Required')
-				.setValue(this.plugin.settings.roam_key)
+				.setValue(this.plugin.settings.ptn_key)
 				.onChange(async (value) => {
-					this.plugin.settings.roam_key = value;
+					this.plugin.settings.ptn_key = value;
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
-			.setName('Auto append')
-			.setDesc('Hashtags or other text to append to every note')
+			.setName('Auto prepend')
+			.setDesc('Hashtags or other text to prepend to every note')
 			.addText(text => text
-				.setPlaceholder('E.g. #phonetoroam')
-				.setValue(this.plugin.settings.auto_append)
+				.setPlaceholder('E.g. #PhoneToNoteToObsidian')
+				.setValue(this.plugin.settings.auto_prepend)
 				.onChange(async (value) => {
-					this.plugin.settings.auto_append = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Get raw text')
-			.setDesc('Ignore Phone to Roam\'s parsed dates, etc')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.use_raw_text)
-				.onChange(async (value) => {
-					this.plugin.settings.use_raw_text = value;
+					this.plugin.settings.auto_prepend = value;
 					await this.plugin.saveSettings();
 				}));
 	}
 }
+
+
