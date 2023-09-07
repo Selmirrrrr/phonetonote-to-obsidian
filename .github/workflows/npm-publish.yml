@@ -23,7 +23,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            main.js
+            main.ts
             LICENSE
             manifest.json
-            styles.css
